@@ -23,6 +23,7 @@ import threading
 import webbrowser
 import markdown
 import webview
+import html
 
 def get_css():
     return """
@@ -137,6 +138,86 @@ def get_css():
         background-color: #e1e4e6;
         border: 0;
     }
+    /* 編集モード関連のスタイル */
+    .edit-btn {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background-color: #0366d6;
+        color: #ffffff;
+        border: none;
+        box-shadow: 0 4px 12px rgba(3, 102, 214, 0.3);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        z-index: 1000;
+        outline: none;
+    }
+    .edit-btn:hover {
+        background-color: #0255b3;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(3, 102, 214, 0.4);
+    }
+    .edit-btn:active {
+        transform: translateY(0);
+    }
+    .edit-btn svg {
+        width: 24px;
+        height: 24px;
+        fill: currentColor;
+        transition: transform 0.25s ease;
+    }
+    .edit-btn.view-mode-active {
+        background-color: #28a745;
+        box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3);
+    }
+    .edit-btn.view-mode-active:hover {
+        background-color: #218838;
+        box-shadow: 0 6px 16px rgba(40, 167, 69, 0.4);
+    }
+    
+    #editor-container {
+        display: none;
+        max-width: 900px;
+        margin: 0 auto;
+        animation: fadeIn 0.2s ease-out;
+    }
+    #editor {
+        width: 100%;
+        height: calc(100vh - 120px);
+        min-height: 400px;
+        padding: 20px;
+        box-sizing: border-box;
+        border: 1px solid #dfe2e5;
+        border-radius: 8px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+        font-size: 15px;
+        line-height: 1.6;
+        color: #24292e;
+        background-color: #fafbfc;
+        resize: none;
+        outline: none;
+        transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+    }
+    #editor:focus {
+        border-color: #0366d6;
+        background-color: #ffffff;
+        box-shadow: 0 0 0 3px rgba(3, 102, 214, 0.15);
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    body.editing-active {
+        overflow: hidden;
+    }
     """
 
 def convert_md_to_html(filepath):
@@ -145,6 +226,8 @@ def convert_md_to_html(filepath):
             text = f.read()
     except Exception as e:
         text = f"# Error\n\nFailed to read file: {e}"
+
+    raw_markdown_escaped = html.escape(text)
 
     # 拡張機能を有効化してHTML変換
     # tables: テーブルサポート
@@ -167,10 +250,28 @@ def convert_md_to_html(filepath):
         </style>
     </head>
     <body>
-        <div class="markdown-body">
+        <div id="view-container" class="markdown-body">
             {{CONTENT}}
         </div>
+        <div id="editor-container">
+            <textarea id="editor" placeholder="Markdownを記述してください..."></textarea>
+        </div>
+        
+        <textarea id="raw-markdown" style="display:none;">{{RAW_MARKDOWN}}</textarea>
+        
+        <button id="mode-toggle" class="edit-btn" title="Edit Markdown">
+            <!-- 鉛筆アイコン -->
+            <svg id="icon-edit" viewBox="0 0 24 24">
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+            </svg>
+            <!-- チェックマークアイコン（保存してビュー） -->
+            <svg id="icon-save" viewBox="0 0 24 24" style="display:none;">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+            </svg>
+        </button>
+
         <script>
+            // 外部リンククリックの処理
             document.addEventListener('click', function(e) {
                 var target = e.target;
                 while (target && target.tagName !== 'A') {
@@ -184,6 +285,72 @@ def convert_md_to_html(filepath):
                     }
                 }
             });
+
+            // 編集モードトグル処理
+            (function() {
+                var modeToggle = document.getElementById('mode-toggle');
+                var viewContainer = document.getElementById('view-container');
+                var editorContainer = document.getElementById('editor-container');
+                var editor = document.getElementById('editor');
+                var rawMarkdown = document.getElementById('raw-markdown');
+                var iconEdit = document.getElementById('icon-edit');
+                var iconSave = document.getElementById('icon-save');
+                
+                var isEditing = false;
+                
+                modeToggle.addEventListener('click', function() {
+                    if (!isEditing) {
+                        // 編集モードに入る
+                        isEditing = true;
+                        document.body.classList.add('editing-active');
+                        viewContainer.style.display = 'none';
+                        editorContainer.style.display = 'block';
+                        
+                        // 生テキストをセット
+                        editor.value = rawMarkdown.value;
+                        editor.focus();
+                        
+                        // ボタン状態の変更
+                        modeToggle.classList.add('view-mode-active');
+                        modeToggle.title = "Save & View";
+                        iconEdit.style.display = 'none';
+                        iconSave.style.display = 'block';
+                        
+                        // Python側に通知
+                        pywebview.api.set_editing(true);
+                    } else {
+                        // ビューモードに戻る（自動セーブ）
+                        var newContent = editor.value;
+                        
+                        // 保存ボタンをローディング状態にする
+                        modeToggle.style.opacity = '0.5';
+                        modeToggle.disabled = true;
+                        
+                        pywebview.api.save_content(newContent).then(function(success) {
+                            if (!success) {
+                                alert('ファイルの保存中にエラーが発生しました。');
+                                modeToggle.style.opacity = '1';
+                                modeToggle.disabled = false;
+                            }
+                        }).catch(function(err) {
+                            console.error(err);
+                            modeToggle.style.opacity = '1';
+                            modeToggle.disabled = false;
+                            alert('ファイルの保存中にエラーが発生しました。');
+                        });
+                    }
+                });
+                
+                // Ctrl+S ショートカットもエディタ内でサポート
+                editor.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                        e.preventDefault();
+                        if (!modeToggle.disabled) {
+                            modeToggle.click();
+                        }
+                    }
+                });
+            })();
         </script>
     </body>
     </html>
@@ -191,14 +358,52 @@ def convert_md_to_html(filepath):
     
     full_html = template.replace('{{TITLE}}', os.path.basename(filepath))\
                         .replace('{{CSS}}', get_css())\
-                        .replace('{{CONTENT}}', html_content)
+                        .replace('{{CONTENT}}', html_content)\
+                        .replace('{{RAW_MARKDOWN}}', raw_markdown_escaped)
     return full_html
 
 class Api:
+    def __init__(self, filepath=None):
+        self._filepath = filepath
+        self._window = None
+        self._is_editing = False
+
+    def set_window(self, window):
+        self._window = window
+
     def open_external_link(self, url):
         webbrowser.open(url)
 
-def watch_file(filepath, window):
+    def set_editing(self, is_editing):
+        self._is_editing = is_editing
+
+    def save_content(self, content):
+        if self._filepath:
+            try:
+                with open(self._filepath, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                
+                # 自動セーブしたら即座に再レンダリングしてビューに反映
+                if self._window:
+                    self._is_editing = False
+                    new_html = convert_md_to_html(self._filepath)
+                    
+                    # ページ遷移(load_html)によって現在のJavaScript実行コンテキストが破棄される前に、
+                    # save_contentの戻り値処理(JS Promiseの解決)を正常に完了させるため、
+                    # 別スレッドから僅かな遅延を入れて非同期で load_html を実行します。
+                    def update_ui():
+                        time.sleep(0.05)
+                        if self._window:
+                            self._window.load_html(new_html)
+                    
+                    threading.Thread(target=update_ui, daemon=True).start()
+                return True
+            except Exception as e:
+                print(f"Error saving file: {e}")
+                return False
+        return False
+
+def watch_file(filepath, window, api):
     try:
         last_mtime = os.path.getmtime(filepath)
     except Exception:
@@ -206,6 +411,8 @@ def watch_file(filepath, window):
 
     while True:
         time.sleep(0.5)
+        if api._is_editing:
+            continue
         try:
             current_mtime = os.path.getmtime(filepath)
             if current_mtime != last_mtime:
@@ -294,7 +501,7 @@ def main():
             initial_html = convert_md_to_html(filepath)
             title = f"{os.path.basename(filepath)} - showmd"
 
-    api = Api()
+    api = Api(filepath)
     window = webview.create_window(
         title=title,
         html=initial_html,
@@ -304,10 +511,11 @@ def main():
         min_size=(400, 300),
         text_select=True
     )
+    api.set_window(window)
 
     def start_monitoring(win):
         if filepath:
-            t = threading.Thread(target=watch_file, args=(filepath, win), daemon=True)
+            t = threading.Thread(target=watch_file, args=(filepath, win, api), daemon=True)
             t.start()
 
     webview.start(start_monitoring, window)

@@ -89,3 +89,7 @@ pyinstaller --onefile --noconsole --clean showmd.py
 - [x] コードブロック (```` ``` ````) - 枠線または背景色、等幅フォント
 - [x] 水平線 (`---`)
 - [x] リンク (`[text](url)`) - 青色・下線（ブラウザ起動リンク）
+
+## Appendix
+
+2026年6月1日：編集機能を設けました
