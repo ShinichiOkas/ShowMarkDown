@@ -1,3 +1,5 @@
 pywebview>=5.0
 markdown>=3.5
+pymdown-extensions>=10.0
+latex2mathml>=3.77
 pyinstaller>=6.0

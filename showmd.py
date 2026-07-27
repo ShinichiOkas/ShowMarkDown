@@ -18,12 +18,17 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-import time
-import threading
-import webbrowser
-import markdown
-import webview
+import atexit
 import html
+import tempfile
+import threading
+import time
+import webbrowser
+from pathlib import Path
+
+import webview
+
+import mdrender
 
 def get_css():
     return """
@@ -218,6 +223,135 @@ def get_css():
     body.editing-active {
         overflow: hidden;
     }
+
+    /* ===== 数式 (MathML) ===== */
+    math {
+        font-size: 1.08em;
+    }
+    .math-block {
+        margin: 16px 0;
+        text-align: center;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+    .math-block math {
+        font-size: 1.15em;
+    }
+    .math-inline {
+        white-space: nowrap;
+    }
+    /* 解釈できなかった数式は原文をそのまま見せる */
+    .math-error {
+        background-color: #ffeef0;
+        color: #d73a49;
+        border: 1px solid #fdaeb7;
+    }
+    .math-raw {
+        background-color: #fff5b1;
+    }
+
+    /* ===== タスクリスト ===== */
+    ul.task-list {
+        padding-left: 1.2em;
+    }
+    li.task-list-item {
+        list-style: none;
+    }
+    li.task-list-item > input[type="checkbox"] {
+        margin: 0 0.4em 0 -1.2em;
+        vertical-align: middle;
+    }
+
+    /* ===== 打ち消し線 ===== */
+    del {
+        color: #6a737d;
+    }
+
+    /* ===== 定義リスト ===== */
+    dl dt {
+        font-weight: 600;
+        margin-top: 16px;
+    }
+    dl dd {
+        margin-left: 2em;
+        margin-bottom: 8px;
+    }
+
+    /* ===== 略語 ===== */
+    abbr[title] {
+        border-bottom: 1px dotted #6a737d;
+        text-decoration: none;
+        cursor: help;
+    }
+
+    /* ===== 脚注 ===== */
+    .footnote {
+        font-size: 0.875em;
+        color: #6a737d;
+        margin-top: 32px;
+    }
+    .footnote hr {
+        height: 1px;
+        background-color: #eaecef;
+        margin: 16px 0;
+    }
+    sup[id^="fnref"] a {
+        text-decoration: none;
+    }
+
+    /* ===== 目次 ([TOC]) ===== */
+    .toc {
+        background-color: #f6f8fa;
+        border: 1px solid #eaecef;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+    }
+    .toc ul {
+        margin: 0;
+        padding-left: 1.4em;
+    }
+    .toc > ul {
+        padding-left: 1em;
+    }
+
+    /* ===== 生HTML でよく使われる要素 ===== */
+    details {
+        border: 1px solid #eaecef;
+        border-radius: 6px;
+        padding: 8px 12px;
+        margin-bottom: 16px;
+    }
+    details > summary {
+        cursor: pointer;
+        font-weight: 600;
+        margin: -8px -12px;
+        padding: 8px 12px;
+    }
+    details[open] > summary {
+        border-bottom: 1px solid #eaecef;
+        margin-bottom: 8px;
+    }
+    kbd {
+        display: inline-block;
+        padding: 3px 5px;
+        font-size: 0.8em;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        line-height: 1;
+        color: #24292e;
+        background-color: #fafbfc;
+        border: 1px solid #d1d5da;
+        border-bottom-color: #c6cbd1;
+        border-radius: 3px;
+        box-shadow: inset 0 -1px 0 #c6cbd1;
+    }
+    sub, sup {
+        font-size: 0.75em;
+        line-height: 0;
+    }
+    mark {
+        background-color: #fff5b1;
+    }
     """
 
 def convert_md_to_html(filepath):
@@ -229,14 +363,10 @@ def convert_md_to_html(filepath):
 
     raw_markdown_escaped = html.escape(text)
 
-    # 拡張機能を有効化してHTML変換
-    # tables: テーブルサポート
-    # fenced_code: ```によるコードブロックサポート
-    html_content = markdown.markdown(
-        text,
-        extensions=['tables', 'fenced_code']
-    )
-    
+    # 画像の相対パスは、MDファイルのあるフォルダを基準に file:// 絶対URLへ解決する
+    base_dir = os.path.dirname(os.path.abspath(filepath))
+    html_content = mdrender.render(text, base_dir)
+
     # CSSスタイルをインポートしたHTMLテンプレートを構築
     # JSで外部リンクのクリックをフックしてPython APIを呼び出す
     template = """
@@ -362,11 +492,58 @@ def convert_md_to_html(filepath):
                         .replace('{{RAW_MARKDOWN}}', raw_markdown_escaped)
     return full_html
 
+# ---------------------------------------------------------------------------
+# ページの受け渡し
+#
+# pywebview の load_html は WebView2 の NavigateToString を呼ぶため、文書の origin が
+# about:blank になり file:// のサブリソース（ローカル画像）を一切読み込めない。
+# そこで生成したHTMLを一時ファイルに書き出し、file:// URL として開く。
+# 再描画は同じ一時ファイルを書き換えたうえで location.reload() させる
+# （同一URLへの load_url は WebView2 が再ナビゲートせず、loaded イベントが復帰しない）。
+# ---------------------------------------------------------------------------
+
+_page_path = None
+
+
+def _page_file():
+    global _page_path
+    if _page_path is None:
+        fd, _page_path = tempfile.mkstemp(prefix='showmd_', suffix='.html')
+        os.close(fd)
+        atexit.register(_cleanup_page_file)
+    return _page_path
+
+
+def _cleanup_page_file():
+    if _page_path:
+        try:
+            os.remove(_page_path)
+        except Exception:
+            pass
+
+
+def write_page(html_text):
+    """HTMLを一時ファイルへ書き出し、その file:// URL を返す。"""
+    path = _page_file()
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(html_text)
+    return Path(path).as_uri()
+
+
+def reload_page(window):
+    try:
+        window.evaluate_js('location.reload()')
+    except Exception:
+        pass
+
+
 class Api:
     def __init__(self, filepath=None):
         self._filepath = filepath
         self._window = None
         self._is_editing = False
+        # ファイル監視スレッドと共有する。保存直後の二重リロードを防ぐ
+        self._last_mtime = None
 
     def set_window(self, window):
         self._window = window
@@ -378,36 +555,41 @@ class Api:
         self._is_editing = is_editing
 
     def save_content(self, content):
-        if self._filepath:
-            try:
-                with open(self._filepath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                
-                # 自動セーブしたら即座に再レンダリングしてビューに反映
-                if self._window:
-                    self._is_editing = False
-                    new_html = convert_md_to_html(self._filepath)
-                    
-                    # ページ遷移(load_html)によって現在のJavaScript実行コンテキストが破棄される前に、
-                    # save_contentの戻り値処理(JS Promiseの解決)を正常に完了させるため、
-                    # 別スレッドから僅かな遅延を入れて非同期で load_html を実行します。
-                    def update_ui():
-                        time.sleep(0.05)
-                        if self._window:
-                            self._window.load_html(new_html)
-                    
-                    threading.Thread(target=update_ui, daemon=True).start()
-                return True
-            except Exception as e:
-                print(f"Error saving file: {e}")
-                return False
-        return False
+        if not self._filepath:
+            return False
+        try:
+            with open(self._filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            # 自動セーブしたら即座に再レンダリングしてビューに反映
+            if self._window:
+                self._is_editing = False
+                write_page(convert_md_to_html(self._filepath))
+                try:
+                    self._last_mtime = os.path.getmtime(self._filepath)
+                except Exception:
+                    pass
+
+                # 再読み込みによって現在のJavaScript実行コンテキストが破棄される前に、
+                # save_contentの戻り値処理(JS Promiseの解決)を正常に完了させるため、
+                # 別スレッドから僅かな遅延を入れて非同期でリロードします。
+                def update_ui():
+                    time.sleep(0.05)
+                    if self._window:
+                        reload_page(self._window)
+
+                threading.Thread(target=update_ui, daemon=True).start()
+            return True
+        except Exception as e:
+            print(f"Error saving file: {e}")
+            return False
+
 
 def watch_file(filepath, window, api):
     try:
-        last_mtime = os.path.getmtime(filepath)
+        api._last_mtime = os.path.getmtime(filepath)
     except Exception:
-        last_mtime = 0
+        api._last_mtime = 0
 
     while True:
         time.sleep(0.5)
@@ -415,10 +597,10 @@ def watch_file(filepath, window, api):
             continue
         try:
             current_mtime = os.path.getmtime(filepath)
-            if current_mtime != last_mtime:
-                last_mtime = current_mtime
-                new_html = convert_md_to_html(filepath)
-                window.load_html(new_html)
+            if current_mtime != api._last_mtime:
+                api._last_mtime = current_mtime
+                write_page(convert_md_to_html(filepath))
+                reload_page(window)
         except Exception:
             pass
 
@@ -504,7 +686,7 @@ def main():
     api = Api(filepath)
     window = webview.create_window(
         title=title,
-        html=initial_html,
+        url=write_page(initial_html),
         js_api=api,
         width=800,
         height=600,

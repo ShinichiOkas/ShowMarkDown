@@ -44,6 +44,13 @@ def main():
         '-n', 'showmd',
         '--workpath', workpath,
         '--distpath', distpath,
+        # latex2mathml は unimathsymbols.txt をランタイムに読むため、
+        # データファイルごと同梱する必要がある（--collect-all で一括収集）
+        '--collect-all', 'latex2mathml',
+        # Markdown拡張は文字列名で動的ロードされ PyInstaller が静的解析で見つけられない。
+        # 明示的に収集しないと実行時に ModuleNotFoundError になる。
+        '--collect-submodules', 'pymdownx',
+        '--collect-submodules', 'markdown.extensions',
     ]
 
     for ex in excludes:
