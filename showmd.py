@@ -194,8 +194,10 @@ def get_css():
     }
     #editor {
         width: 100%;
-        height: calc(100vh - 120px);
-        min-height: 400px;
+        /* CSS zoom は vh を補正しないが、引いている 120px は補正される。
+           そのまま書くと拡大時にエディタが画面からはみ出すため --zoom で割り戻す。 */
+        height: calc(100vh / var(--zoom, 1) - 120px);
+        min-height: calc(400px / var(--zoom, 1));
         padding: 20px;
         box-sizing: border-box;
         border: 1px solid #dfe2e5;
@@ -378,6 +380,74 @@ def convert_md_to_html(filepath):
         <style>
             {{CSS}}
         </style>
+        <script>
+            // 表示倍率（Ctrl+ホイール / Ctrl+プラス・マイナス / Ctrl+0）
+            //
+            // WebView2 のネイティブズームは AreBrowserAcceleratorKeysEnabled が
+            // デバッグ時のみ有効なため効かない。CSS zoom で自前に実装する。
+            //
+            // 倍率は localStorage に持つ。保存・ファイル自動更新のたびに
+            // location.reload() で再描画するため、持たないと毎回100%に戻ってしまう。
+            // body より先に適用したいので head で実行する（ちらつき防止）。
+            (function() {
+                var STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+                var DEFAULT_INDEX = 5;   // STEPS[5] === 1
+                var KEY = 'showmd-zoom';
+
+                function stored() {
+                    try {
+                        var v = parseFloat(localStorage.getItem(KEY));
+                        return isFinite(v) && v > 0 ? v : 1;
+                    } catch (e) {
+                        return 1;
+                    }
+                }
+
+                function nearestIndex(z) {
+                    var best = DEFAULT_INDEX, diff = Infinity;
+                    for (var i = 0; i < STEPS.length; i++) {
+                        var d = Math.abs(STEPS[i] - z);
+                        if (d < diff) { diff = d; best = i; }
+                    }
+                    return best;
+                }
+
+                function apply(z) {
+                    document.documentElement.style.zoom = (z === 1) ? '' : String(z);
+                    // vh を使う要素（エディタ）がズームを割り戻せるように公開する
+                    document.documentElement.style.setProperty('--zoom', String(z));
+                    try { localStorage.setItem(KEY, String(z)); } catch (e) {}
+                }
+
+                function step(delta) {
+                    var i = nearestIndex(stored()) + delta;
+                    apply(STEPS[Math.max(0, Math.min(STEPS.length - 1, i))]);
+                }
+
+                // 復元（reload をまたいで倍率を維持する）
+                apply(stored());
+
+                document.addEventListener('wheel', function(e) {
+                    if (!e.ctrlKey) return;
+                    e.preventDefault();
+                    step(e.deltaY < 0 ? 1 : -1);
+                }, { passive: false });
+
+                document.addEventListener('keydown', function(e) {
+                    if (!(e.ctrlKey || e.metaKey)) return;
+                    if (e.key === '0') {
+                        e.preventDefault();
+                        apply(1);
+                    } else if (e.key === '+' || e.key === '=') {
+                        e.preventDefault();
+                        step(1);
+                    } else if (e.key === '-') {
+                        e.preventDefault();
+                        step(-1);
+                    }
+                });
+            })();
+        </script>
     </head>
     <body>
         <div id="view-container" class="markdown-body">

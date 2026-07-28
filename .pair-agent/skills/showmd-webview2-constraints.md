@@ -1,6 +1,6 @@
 ---
 name: showmd / pywebview + WebView2 の実測済み制約
-description: load_html の origin 問題・load_url の再ナビゲート挙動・file:// URL のクエリ・PyInstaller の動的ロード検出漏れ。すべて実測で確定した事実
+description: load_html の origin 問題・load_url の再ナビゲート挙動・file:// URL のクエリ・ネイティブズーム無効・PyInstaller の動的ロード検出漏れ。すべて実測で確定した事実
 type: reference
 maturity: draft
 proposed_by: ai
@@ -52,7 +52,31 @@ Windows ではファイルが解決できず**空のページ**になる（DOM �
 `<math>` 要素はレイアウトボックスを持って正しく描画される（Chrome 150 で確認）。
 KaTeX / MathJax を同梱せず、Python 側で MathML へ変換するだけで数式が出る。
 
-## 5. PyInstaller は文字列名で動的ロードされる Markdown 拡張を検出できない
+## 5. WebView2 のネイティブズーム（Ctrl+ホイール）は効かない
+
+`edgechromium.py` は `settings.IsZoomControlEnabled = True` を無条件に立てるが、
+同時に `settings.AreBrowserAcceleratorKeysEnabled = _state['debug']` としている。
+非デバッグ実行では False になり、**Ctrl+ホイールのズームアクセラレータが無効**になる。
+
+- 実測: Ctrl+ホイールを合成入力で送っても `devicePixelRatio` が変化しない
+- 対照実験として Ctrl なしのホイールを送ると `scrollY` は動く
+  → 入力は届いている。ズームだけが効いていない
+
+**対処（採用した方式）**: `wheel` イベント（`{passive:false}`）で `e.ctrlKey` を見て
+`preventDefault()` し、`document.documentElement.style.zoom` を段階的に変える。
+
+**注意点**:
+- CSS `zoom` は **`vh` を補正しない**。`calc(100vh - 120px)` のように
+  「vh から固定 px を引く」式は、拡大時に px 側だけがズームされて破綻する。
+  `--zoom` カスタムプロパティを公開し `calc(100vh / var(--zoom, 1) - 120px)` と割り戻す。
+  同じ理由で `min-height: 400px` も `calc(400px / var(--zoom, 1))` にする。
+- 倍率は `localStorage` に持つ。再描画は `location.reload()` なので、
+  持たないと保存・自動更新のたびに 100% へ戻る。
+- ただし pywebview は `private_mode=True` が既定で、
+  「private mode では cookie と local storage は保存されない」。
+  **アプリを閉じると `localStorage` は消える**（セッション内は保持される）。
+
+## 6. PyInstaller は文字列名で動的ロードされる Markdown 拡張を検出できない
 
 `markdown.Markdown(extensions=['pymdownx.superfences', ...])` のように
 **文字列で指定した拡張**は静的解析に引っかからず、EXE に同梱されない。
@@ -67,7 +91,7 @@ KaTeX / MathJax を同梱せず、Python 側で MathML へ変換するだけで�
 `os.path.dirname(os.path.realpath(__file__))` から実行時に読むため、
 `--collect-all latex2mathml` でデータファイルごと収集する必要がある。
 
-## 6. 起動コストの実測値
+## 7. 起動コストの実測値
 
 | 項目 | 値 |
 |---|---|
