@@ -5,14 +5,19 @@ import shutil
 import tempfile
 
 def main():
-    # 仮想環境の python と pyinstaller のパスを取得
+    # 仮想環境の python のパスを取得
+    # pyinstaller.exe（pip が生成するコンソールスクリプトのランチャー）はインストール時点の
+    # python.exe の絶対パスを埋め込む。venv を OneDrive 配下など別パスで作成した後に
+    # プロジェクトを移動すると、埋め込まれたパスが存在しなくなり
+    # "Fatal error in launcher" で起動できなくなる。venv 本体の python.exe を
+    # `-m PyInstaller` で呼べばこの問題を避けられる。
     if os.name == 'nt':
-        pyinstaller_bin = os.path.join('.venv', 'Scripts', 'pyinstaller.exe')
+        python_bin = os.path.join('.venv', 'Scripts', 'python.exe')
     else:
-        pyinstaller_bin = os.path.join('.venv', 'bin', 'pyinstaller')
+        python_bin = os.path.join('.venv', 'bin', 'python')
 
-    if not os.path.exists(pyinstaller_bin):
-        print(f"Error: PyInstaller not found at {pyinstaller_bin}. Please install dependencies first.")
+    if not os.path.exists(python_bin):
+        print(f"Error: Python venv not found at {python_bin}. Please install dependencies first.")
         sys.exit(1)
 
     print("Building showmd.exe...")
@@ -38,7 +43,8 @@ def main():
                 print(f"Warning: Failed to clean old temp path {path}: {e}")
 
     cmd = [
-        pyinstaller_bin,
+        python_bin,
+        '-m', 'PyInstaller',
         '--onefile',
         '--clean',
         '-n', 'showmd',
