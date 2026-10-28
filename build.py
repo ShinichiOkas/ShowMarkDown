@@ -1,10 +1,30 @@
+import argparse
 import subprocess
 import sys
 import os
 import shutil
 import tempfile
 
+# --install: ビルドした exe を PATH の通った所へ置く。決定順:
+#   --install-dir 引数 > 環境変数 AGENT_INSTALL_DIR > 既定 %USERPROFILE%\.local\bin (= ~/.local/bin)
+# C:\bin などマシン固有の置き先はリポジトリの既定に焼き込まない(環境変数で各自が与える)。
+# 既定 ~/.local/bin は移植性のある値(OSS 化・クロス PF でも破綻しない)。
+def resolve_install_dir(install_dir_arg):
+    if install_dir_arg:
+        return install_dir_arg
+    env = os.environ.get('AGENT_INSTALL_DIR')
+    if env:
+        return env
+    return os.path.join(os.path.expanduser('~'), '.local', 'bin')
+
+
 def main():
+    parser = argparse.ArgumentParser(description='Build showmd.exe')
+    parser.add_argument('--install', action='store_true',
+                        help='built exe を PATH の通った所へ置く')
+    parser.add_argument('--install-dir', default=None,
+                        help='置き先(省略時: env AGENT_INSTALL_DIR > 既定 ~/.local/bin)')
+    args = parser.parse_args()
     # 仮想環境の python のパスを取得
     # pyinstaller.exe（pip が生成するコンソールスクリプトのランチャー）はインストール時点の
     # python.exe の絶対パスを埋め込む。venv を OneDrive 配下など別パスで作成した後に
@@ -82,6 +102,20 @@ def main():
                 print(f"Copied to {dest_path}")
             except Exception as e:
                 print(f"Error copying {exe_path} to {dest_path}: {e}")
+
+            # --install: PATH の通った所へ置く(決定順は resolve_install_dir を参照)
+            if args.install:
+                install_dir = resolve_install_dir(args.install_dir)
+                try:
+                    os.makedirs(install_dir, exist_ok=True)
+                    install_path = os.path.join(install_dir, 'showmd.exe')
+                    shutil.copy2(exe_path, install_path)
+                    print(f"Installed: {install_path}")
+                    path_dirs = [d.rstrip(os.sep) for d in os.environ.get('PATH', '').split(os.pathsep)]
+                    if install_dir.rstrip(os.sep) not in path_dirs:
+                        print(f"WARN: {install_dir} is not on PATH (this process)")
+                except Exception as e:
+                    print(f"Error installing to {install_dir}: {e}")
     else:
         print("Build failed.")
 
